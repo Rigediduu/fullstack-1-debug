@@ -18,31 +18,90 @@ applyTheme(loadTheme());
 saveTheme(loadTheme());
 
 // 2) Haku — virhe: väärä API-osoite + virheenkäsittely puuttuu
+
+// korjaus
+// Vaihdettu endpoint sellaiseksi joka palauttaa arrayn (coffee/hot)
+// Lisätty try/catch virheiden käsittelyyn, jotta fetch error ei kaada sovellusta
+// Käytössä AbortController -> vanha request voidaan perua jos uusi haku lähetetään heti perään
+// statusEl näyttää nyt lataustilan ja error/success -viestit selaimessa
+
+
 const form = document.getElementById('searchForm');
 const resultsEl = document.getElementById('results');
 const statusEl = document.getElementById('status');
 
-// Coffee http-rajapinnan dokumentaatio: https://sampleapis.com/api-list/coffee
-async function searchImages(query) {
-    const url = `https://api.sampleapis.com/coffee/images`; // BUG: ei vastaa hakusanaan
-    const res = await fetch(url);
-    const data = await res.json();
-    return data.slice(0, 8).map(x => ({ title: x.title || query, url: x.image }));
+let currentCtrl = null; // muistetaan meneillään oleva request
+
+async function searchImages(query, { signal } = {}) {
+
+  // Valitse taulukon palauttava endpoint ja suodata hakusanalla
+  const url = 'https://api.sampleapis.com/coffee/hot';
+
+  const res = await fetch(url, { signal });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+  const data = await res.json();
+  if (!Array.isArray(data)) throw new Error('Unexpected response format');
+
+  const q = (query || '').trim().toLowerCase();
+  const filtered = q
+    ? data.filter(item => (item.title || '').toLowerCase().includes(q))
+    : data;
+
+  return filtered.slice(0, 8).map(x => ({
+    title: x.title || query || 'Coffee',
+    url: x.image
+  }));
 }
 
 form.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const q = $('#q').value.trim();
-    statusEl.textContent = 'Ladataan…';
-    const items = await searchImages(q); // BUG: ei try/catch, ks. https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/try...catch
-    resultsEl.innerHTML = '';
+  e.preventDefault();
+
+  // Peru aiempi request jos uusi haku käynnistyy
+  if (currentCtrl) currentCtrl.abort();
+  currentCtrl = new AbortController();
+
+  const q = $('#q').value;
+  statusEl.textContent = 'Ladataan…';
+  statusEl.dataset.state = 'loading';
+  resultsEl.innerHTML = '';
+
+  try {
+    const items = await searchImages(q, { signal: currentCtrl.signal });
+
+    // Jos juuri tämä request peruutettiin, älä tee mitään
+    if (currentCtrl.signal.aborted) return;
+
+    if (!items.length) {
+      statusEl.textContent = 'Ei tuloksia';
+      statusEl.dataset.state = 'empty';
+      return;
+    }
+
+    // Renderöi tulokset
     items.forEach(item => {
-        const li = document.createElement('li');
-        li.className = 'card';
-        li.innerHTML = `<strong>${item.title}</strong><br><img alt="" width="160" height="120" src="${item.url}">`;
-        resultsEl.appendChild(li);
+      const li = document.createElement('li');
+      li.className = 'card';
+      li.innerHTML = `<strong>${item.title}</strong><br>
+                      <img alt="" width="160" height="120" src="${item.url}">`;
+      resultsEl.appendChild(li);
     });
+
     statusEl.textContent = `${items.length} tulosta`;
+    statusEl.dataset.state = 'success';
+
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      statusEl.textContent = 'Peruttu';
+      statusEl.dataset.state = 'aborted';
+      return;
+    }
+    console.error('Haku epäonnistui:', err);
+    statusEl.textContent = 'Virhe haussa';
+    statusEl.dataset.state = 'error';
+  } finally {
+    currentCtrl = null;
+  }
 });
 
 // 3) Laskuri — virhe: event delegation ja bubbling sekoilee
